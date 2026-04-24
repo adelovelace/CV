@@ -1,88 +1,175 @@
+import os
 import torch
 import torch.nn as nn
-from utils.data_loader import get_data_loaders
-from models.mobilenet_model import get_mobilenet_v3_custom # Suponiendo que lo moviste 
-from config import get_options
+import torch.optim as optim
+import time
+import copy
+from datetime import datetime
 
-# Configuración
-DATA_DIR = './data'
-IMG_SIZE = 224 # Cambiar a 299 si usas Inception
-BATCH_SIZE = 32
-NUM_CLASSES = 7
-BATCH_SIZE = 32
-LEARNING_RATE = 0.001
-EPOCHS = 10
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 1. Import the configuration arguments
+from config import opt
 
+# Import custom modules
+from utils.data_loader import get_data_loaders, download_kaggle_datasets
+from utils.training_utils import clip_gradient, adjust_lr
+from models.mobilenetv2_rnn import MobileNetV2_RNN
+from models.inceptionv3_rnn import InceptionV3_RNN
 
+# ==========================================
+# Configuration & Hardware Setup
+# ==========================================
+os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    DEVICE = torch.device("mps")
+else:
+    DEVICE = torch.device("cpu")
 
-train_loader, val_loader, class_names = get_data_loaders(DATA_DIR, IMG_SIZE, BATCH_SIZE)
-print(f"Clases detectadas: {class_names}")
+MODEL_CHOICE = "inception"
+DATASET_CHOICE = "fer2013"
 
-model = get_mobilenet_v3_custom(num_classes=len(class_names))
-
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
-
-
-def train_one_epoch(model, loader, criterion, optimizer, is_inception=False):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
+# ==========================================
+# Training and Evaluation Functions
+# ==========================================
+def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, log_dir, ckpt_dir):
+    since = time.time()
     
-    for inputs, labels in loader:
-        inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
-        optimizer.zero_grad()
-
-        if is_inception:
-            # Inception devuelve (salida_principal, salida_auxiliar)
-            outputs, aux_outputs = model(inputs)
-            loss1 = criterion(outputs, labels)
-            loss2 = criterion(aux_outputs, labels)
-            loss = loss1 + 0.4 * loss2
-        else:
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item() * inputs.size(0)
-        _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+    
+    # Initialize the log file
+    log_file_path = os.path.join(log_dir, f'training_{MODEL_CHOICE}_{DATASET_CHOICE}.log')
+    with open(log_file_path, "a") as log_file:
+        log_file.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Training for {num_epochs} Epochs...\n")
+        log_file.write("-" * 50 + "\n")
+    
+    for epoch in range(num_epochs):
+        current_lr = adjust_lr(optimizer, init_lr, epoch, decay_rate=opt.decay_rate, decay_epoch=opt.decay_epoch)
         
-    return running_loss / total, 100. * correct / total
+        print(f'\nEpoch {epoch+1}/{num_epochs} [LR: {current_lr:.6f}]')
+        print('-' * 15)
 
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()  
+            else:
+                model.eval()   
 
+            running_loss = 0.0
+            running_corrects = 0
+            total_samples = 0
+
+            for inputs, labels in dataloaders[phase]:
+                inputs = inputs.to(DEVICE)
+                labels = labels.to(DEVICE)
+
+                optimizer.zero_grad()
+
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+
+                    if phase == 'train':
+                        loss.backward()
+                        clip_gradient(optimizer, opt.clip)
+                        optimizer.step()
+
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+                total_samples += inputs.size(0)
+
+            epoch_loss = running_loss / total_samples
+            epoch_acc = running_corrects.double() / total_samples
+
+            # Print to console and write to log file
+            log_msg = f"Epoch {epoch+1}/{num_epochs} | Phase: {phase.capitalize()} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}\n"
+            print(log_msg.strip())
+            with open(log_file_path, "a") as log_file:
+                log_file.write(log_msg)
+
+            # Deep copy the model if it's the best validation accuracy so far
+            if phase == 'val' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
+                
+                # Save the "best" model dynamically
+                best_path = os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth')
+                torch.save(best_model_wts, best_path)
+
+        # Save an explicit checkpoint at the end of every epoch
+        epoch_ckpt_path = os.path.join(ckpt_dir, f'epoch_{epoch+1}_{MODEL_CHOICE}.pth')
+        torch.save(model.state_dict(), epoch_ckpt_path)
+
+    time_elapsed = time.time() - since
+    summary_msg = f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s\nBest Val Acc: {best_acc:4f}\n'
+    print(summary_msg)
+    with open(log_file_path, "a") as log_file:
+        log_file.write(summary_msg + "-" * 50 + "\n")
+
+    model.load_state_dict(best_model_wts)
+    return model
+
+# ==========================================
+# Main Execution
+# ==========================================
 if __name__ == "__main__":
-
-    opt = get_options()
-    print(f"Entrenando por {opt.epoch} épocas con un LR de {opt.lr}")
     
-    MODELO_A_USAR = "mobilenet"  
-    # ----------------------------------
+    # 1. Setup Directories for outputs, logs, and checkpoints
+    base_save_dir = opt.save_path if '*' not in opt.save_path else './outputs'
+    log_dir = os.path.join(base_save_dir, 'logs')
+    ckpt_dir = os.path.join(base_save_dir, 'checkpoints')
+    
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(ckpt_dir, exist_ok=True)
+    
+    print(f"[!] Using device: {DEVICE} (GPU ID: {opt.gpu_id})")
+    print(f"[!] Logs saving to: {log_dir}")
+    print(f"[!] Checkpoints saving to: {ckpt_dir}")
+    
+    # Download/Verify Kaggle Data
+    fer_path, ck_path = download_kaggle_datasets('./data')
+    dataset_path = fer_path if DATASET_CHOICE == "fer2013" else ck_path
+    
+    img_size = opt.trainsize 
+    batch_size = opt.batchsize
+    
+    train_loader, val_loader, class_names = get_data_loaders(dataset_path, img_size, batch_size)
+    dataloaders = {'train': train_loader, 'val': val_loader}
+    NUM_CLASSES = len(class_names)
+    print(f"[!] Detected {NUM_CLASSES} classes. Image Size: {img_size}x{img_size}")
 
-    if MODELO_A_USAR == "inception":
-        img_size = 299
-        model = get_inception_v3_custom(NUM_CLASSES)
-        is_inc = True
+    # Initialize Model
+    if MODEL_CHOICE == "inception":
+        model = InceptionV3_RNN(num_classes=NUM_CLASSES)
     else:
-        img_size = 224
-        model = get_mobilenet_v3_custom(NUM_CLASSES)
-        is_inc = False
+        model = MobileNetV2_RNN(num_classes=NUM_CLASSES)
+        
+    model = model.to(DEVICE)
 
-    # Filtramos solo los parámetros que NO están congelados para el optimizador
+    # Load model from checkpoint if provided in config
+    if opt.load and os.path.exists(opt.load):
+        print(f"[!] Loading checkpoint weights from: {opt.load}")
+        model.load_state_dict(torch.load(opt.load, map_location=DEVICE))
+
+    # Setup Optimizer
     params_to_update = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.Adam(params_to_update, lr=LEARNING_RATE)
+    optimizer = optim.Adam(params_to_update, lr=opt.lr)
     criterion = nn.CrossEntropyLoss()
 
-    print(f"Modelo: {MODELO_A_USAR}")
-    print(f"Parámetros a entrenar: {sum(p.numel() for p in params_to_update)}")
+    # Train Model
+    print(f"\n[!] Starting training for {opt.epoch} epochs...")
+    best_model = train_model(
+        model=model, 
+        dataloaders=dataloaders, 
+        criterion=criterion, 
+        optimizer=optimizer, 
+        num_epochs=opt.epoch, 
+        init_lr=opt.lr,
+        log_dir=log_dir,          # Passed dynamically
+        ckpt_dir=ckpt_dir         # Passed dynamically
+    )
     
-    # Aquí cargarías tus datos reales:
-    # train_loader = DataLoader(datasets.ImageFolder('path/train', transform=get_transforms(img_size)), batch_size=BATCH_SIZE, shuffle=True)
-    
-    print("\n[!] Listo para entrenar. Asegúrate de apuntar a la carpeta de tu dataset.")
+    print("[!] Training loop finished. The best weights are saved in the checkpoints directory.")
