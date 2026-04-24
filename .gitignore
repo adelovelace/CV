@@ -206,5 +206,19 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Datasets
+/data/
+*.zip
 
-**/.DS_Store
+# Checkpoints and Logs
+/outputs/
+/weights/
+*.pth
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+env/
+venv/
+.DS_Store

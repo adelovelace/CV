@@ -10,7 +10,7 @@ The framework extracts spatial features using pre-trained **MobileNetV2** or **I
 * **Automated Data Management**: Seamlessly downloads and prepares Kaggle datasets (FER2013 and CK+) using `kagglehub` with automatic train/validation splitting.
 * **Hardware Acceleration**: Automatically detects and utilizes NVIDIA GPUs (`cuda`), Apple Silicon (`mps`), or defaults to `cpu`.
 * **Robust Training Setup**: Features gradient clipping, custom learning rate decay, and comprehensive experiment logging/checkpointing.
-* **Configurable Parameters**: Easily manage hyperparameters and directories through `config.py` or command-line arguments.
+* **Configurable Parameters**: Easily manage hyperparameters, models, and datasets through command-line arguments.
 
 ## Project Structure
 ```text
@@ -58,33 +58,40 @@ pip install torch torchvision kagglehub
 
 ## Usage
 
-### 1. Configuration
-You can adjust the default hyperparameters directly in `config.py` or pass them as arguments when running the training script.
+### 1. Training the Model
+You can control the entire training process directly from your terminal using command-line arguments. The script will automatically download the required datasets if they are not already present.
 
-### 2. Training
-To start training the model, simply run:
+**Example 1: Train MobileNetV2 on CK+**
 ```bash
-python train.py
+python train.py --model mobilenet --dataset ckplus --batchsize 64
 ```
 
-**Example with command-line arguments:**
+**Example 2: Train InceptionV3 on FER2013 with custom hyperparameters**
 ```bash
-python train.py --epoch 150 --lr 0.0001 --batchsize 32 --trainsize 224 --gpu_id 0
+python train.py --model inception --dataset fer2013 --epoch 200 --lr 0.001 --gpu_id 0
 ```
 
-### Arguments (from `config.py`)
-* `--epoch`: Total number of training epochs (default: 180)
-* `--lr`: Initial learning rate (default: 5e-5)
-* `--batchsize`: Training batch size (default: 24)
-* `--trainsize`: Input image resolution (e.g., 224 for MobileNet, 299 for Inception)
-* `--clip`: Gradient clipping margin (default: 0.5)
-* `--decay_rate`: Decay rate for learning rate (default: 0.1)
-* `--decay_epoch`: Epoch interval to apply learning rate decay (default: 100)
-* `--load`: Path to load pre-trained weights from a checkpoint
-* `--gpu_id`: Specify which GPU to use (default: '0')
-* `--save_path`: Directory to save logs and model checkpoints
+### 2. Available Arguments (from `config.py`)
+
+**Architecture and Data:**
+* `--model`: Choose the backbone model. Options: `inception`, `mobilenet` (default: `inception`).
+* `--dataset`: Choose the dataset. Options: `fer2013`, `ckplus` (default: `fer2013`).
+
+**Training Hyperparameters:**
+* `--epoch`: Total number of training epochs (default: `150`).
+* `--lr`: Initial learning rate (default: `5e-5`).
+* `--batchsize`: Training batch size (default: `32`).
+* `--trainsize`: Input image resolution (default: `299`). *Note: The script will automatically adjust this to 224 if MobileNet is selected.*
+* `--clip`: Gradient clipping margin (default: `0.5`).
+* `--decay_rate`: Decay rate for learning rate (default: `0.1`).
+* `--decay_epoch`: Epoch interval to apply learning rate decay (default: `50`).
+
+**Hardware and State:**
+* `--gpu_id`: Specify which GPU to use (default: `'0'`).
+* `--load`: Path to load pre-trained weights from a checkpoint.
+* `--save_path`: Directory to save logs and model checkpoints (default: `./outputs`).
 
 ## Outputs
 During training, the script will automatically create the following in your `--save_path` (or `./outputs` by default):
 * `logs/`: Contains a `.log` file tracking loss and accuracy for every epoch.
-* `checkpoints/`: Contains `.pth` files for the model at every epoch, as well as the dynamically updated `best_model.pth` based on highest validation accuracy.
+* `checkpoints/`: Contains `.pth` files for the model at every epoch, as well as the dynamically updated `best_model.pth` based on the highest validation accuracy.

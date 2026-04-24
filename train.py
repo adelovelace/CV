@@ -27,8 +27,17 @@ elif torch.backends.mps.is_available():
 else:
     DEVICE = torch.device("cpu")
 
-MODEL_CHOICE = "inception"
-DATASET_CHOICE = "fer2013"
+MODEL_CHOICE = opt.model
+DATASET_CHOICE = opt.dataset
+
+
+# Automatically fix image size if the user forgets to set it for MobileNet
+if MODEL_CHOICE == "mobilenet" and opt.trainsize != 224:
+    print("[!] MobileNetV2 selected: Automatically setting image size to 224x224")
+    opt.trainsize = 224
+elif MODEL_CHOICE == "inception" and opt.trainsize != 299:
+    print("[!] InceptionV3 selected: Automatically setting image size to 299x299")
+    opt.trainsize = 299
 
 # ==========================================
 # Training and Evaluation Functions
