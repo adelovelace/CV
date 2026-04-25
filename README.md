@@ -1,4 +1,4 @@
-# Detection of Human Emotions using Hybrid CNN-RNN
+# Detection of Human Emotions
 
 ## Overview
 This repository provides a PyTorch implementation of a hybrid Convolutional Neural Network (CNN) and Recurrent Neural Network (RNN) architecture for Facial Expression Recognition (FER). It builds upon the methodologies described in the paper *"Detection of human emotions through facial expressions using hybrid convolutional neural network-recurrent neural network algorithm"*.
