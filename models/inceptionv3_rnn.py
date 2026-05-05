@@ -8,6 +8,9 @@ class InceptionV3_RNN(nn.Module):
         # Load InceptionV3 with pre-trained PyTorch weights
         inception = inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=False)
         
+        # Safely disable the auxiliary outputs so it doesn't break our RNN during training
+        inception.aux_logits = False
+
         # Replace the final FC layer with Identity to get raw features (2048 dims)
         inception.fc = nn.Identity()
         self.features = inception
