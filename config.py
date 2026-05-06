@@ -12,7 +12,7 @@ parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of
 parser.add_argument('--decay_epoch', type=int, default=50, help='every n epochs decay learning rate')
 
 # Architecture and Data
-parser.add_argument('--model', type=str, default='inception', choices=['inception', 'mobilenet'], help='Choose the backbone model')
+parser.add_argument('--model', type=str, default='inception', choices=['inception', 'mobilenet', 'custom'], help='Choose the backbone model')
 parser.add_argument('--dataset', type=str, default='fer2013', choices=['fer2013', 'ckplus'], help='Choose the dataset')
 
 # Paths and Hardware

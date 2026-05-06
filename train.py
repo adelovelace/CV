@@ -38,6 +38,9 @@ if MODEL_CHOICE == "mobilenet" and opt.trainsize != 224:
 elif MODEL_CHOICE == "inception" and opt.trainsize != 299:
     print("[!] InceptionV3 selected: Automatically setting image size to 299x299")
     opt.trainsize = 299
+elif MODEL_CHOICE == "custom" and opt.trainsize != 48:
+    print("[!] Custom selected: Automatically setting image size to 48x48")
+    opt.trainsize = 48
 
 # ==========================================
 # Training and Evaluation Functions
