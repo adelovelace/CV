@@ -6,6 +6,11 @@ import time
 import copy
 from datetime import datetime
 
+# Prevent matplotlib from trying to open a GUI window on headless servers (like Singularity)
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 # 1. Import the configuration arguments
 from config import opt
 
@@ -14,6 +19,7 @@ from utils.data_loader import get_data_loaders, download_kaggle_datasets
 from utils.training_utils import clip_gradient, adjust_lr
 from models.mobilenetv2_rnn import MobileNetV2_RNN
 from models.inceptionv3_rnn import InceptionV3_RNN
+from models.custom_cnn_rnn import CustomCNN_RNN
 
 # ==========================================
 # Configuration & Hardware Setup
@@ -42,6 +48,9 @@ elif MODEL_CHOICE == "custom" and opt.trainsize != 48:
     print("[!] Custom selected: Automatically setting image size to 48x48")
     opt.trainsize = 48
 
+# Allow patience to be set from config, or default to 15 epochs
+PATIENCE = getattr(opt, 'patience', 15)
+
 # ==========================================
 # Training and Evaluation Functions
 # ==========================================
@@ -50,6 +59,11 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
     
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    best_loss = float('inf')
+    epochs_no_improve = 0
+
+    # Dictionaries to track history for plotting
+    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
     
     # Initialize the log file
     log_file_path = os.path.join(log_dir, f'training_{MODEL_CHOICE}_{DATASET_CHOICE}.log')
@@ -96,6 +110,14 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
             epoch_loss = running_loss / total_samples
             epoch_acc = running_corrects.double() / total_samples
 
+            # Record metrics for plotting
+            if phase == 'train':
+                history['train_loss'].append(epoch_loss)
+                history['train_acc'].append(epoch_acc.item())
+            else:
+                history['val_loss'].append(epoch_loss)
+                history['val_acc'].append(epoch_acc.item())
+
             # Print to console and write to log file
             log_msg = f"Epoch {epoch+1}/{num_epochs} | Phase: {phase.capitalize()} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}\n"
             print(log_msg.strip())
@@ -103,17 +125,33 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
                 log_file.write(log_msg)
 
             # Deep copy the model if it's the best validation accuracy so far
-            if phase == 'val' and epoch_acc > best_acc:
-                best_acc = epoch_acc
-                best_model_wts = copy.deepcopy(model.state_dict())
+            # Evaluate Validation phase for Checkpointing and Early Stopping
+            if phase == 'val':
+                # 1. Save Best Model (Based on Accuracy)
+                if epoch_acc > best_acc:
+                    best_acc = epoch_acc
+                    best_model_wts = copy.deepcopy(model.state_dict())
+                    best_path = os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth')
+                    torch.save(best_model_wts, best_path)
                 
-                # Save the "best" model dynamically
-                best_path = os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth')
-                torch.save(best_model_wts, best_path)
+                # 2. Early Stopping Tracking (Based on Loss)
+                if epoch_loss < best_loss:
+                    best_loss = epoch_loss
+                    epochs_no_improve = 0  # Reset counter if loss improves
+                else:
+                    epochs_no_improve += 1
 
         # Save an explicit checkpoint at the end of every epoch
         epoch_ckpt_path = os.path.join(ckpt_dir, f'epoch_{epoch+1}_{MODEL_CHOICE}.pth')
         torch.save(model.state_dict(), epoch_ckpt_path)
+
+        # Trigger Early Stopping
+        if epochs_no_improve >= PATIENCE:
+            stop_msg = f"\n[!] EARLY STOPPING TRIGGERED: Validation loss has not improved for {PATIENCE} epochs.\n"
+            print(stop_msg)
+            with open(log_file_path, "a") as log_file:
+                log_file.write(stop_msg)
+            break
 
     time_elapsed = time.time() - since
     summary_msg = f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s\nBest Val Acc: {best_acc:4f}\n'
@@ -121,6 +159,35 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
     with open(log_file_path, "a") as log_file:
         log_file.write(summary_msg + "-" * 50 + "\n")
 
+    # Generate and save Train vs Val Plot
+    plt.figure(figsize=(14, 5))
+    
+    # Plot Loss
+    plt.subplot(1, 2, 1)
+    plt.plot(history['train_loss'], label='Train Loss', color='blue', linewidth=2)
+    plt.plot(history['val_loss'], label='Val Loss', color='red', linewidth=2, linestyle='dashed')
+    plt.title('Training vs Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    # Plot Accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(history['train_acc'], label='Train Accuracy', color='blue', linewidth=2)
+    plt.plot(history['val_acc'], label='Val Accuracy', color='red', linewidth=2, linestyle='dashed')
+    plt.title('Training vs Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plot_path = os.path.join(log_dir, f'learning_curves_{MODEL_CHOICE}_{DATASET_CHOICE}.png')
+    plt.savefig(plot_path, bbox_inches='tight')
+    plt.close()
+    print(f"[!] Learning curves plotted and saved to: {plot_path}")
+
+    # Load best weights to return
     model.load_state_dict(best_model_wts)
     return model
 
@@ -156,8 +223,10 @@ if __name__ == "__main__":
     # Initialize Model
     if MODEL_CHOICE == "inception":
         model = InceptionV3_RNN(num_classes=NUM_CLASSES)
-    else:
+    elif MODEL_CHOICE == "mobilenet":
         model = MobileNetV2_RNN(num_classes=NUM_CLASSES)
+    elif MODEL_CHOICE == "custom":
+        model = CustomCNN_RNN(num_classes=NUM_CLASSES)
         
     model = model.to(DEVICE)
 

@@ -1,90 +1,83 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models
+import torch
+import torch.nn as nn
 
-def build_improved_cnn_rnn(input_shape, num_classes):
-    """
-    input_shape: (sequence_length, height, width, channels)
-    Example: (20, 48, 48, 1)
-    """
+class CustomCNN_RNN(nn.Module):
+    def __init__(self, num_classes=7):
+        super(CustomCNN_RNN, self).__init__()
+        
+        # =========================
+        # CNN FEATURE EXTRACTOR
+        # =========================
+        self.cnn = nn.Sequential(
+            # Block 1
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            # Block 2
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            # Block 3
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            # Global Average Pooling (Replaces Flatten)
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten()
+        )
+        
+        self.cnn_dropout = nn.Dropout(0.4)
+        
+        # =========================
+        # TEMPORAL MODELING (GRU)
+        # =========================
+        # hidden_size=128, num_layers=1 matches the uploaded Keras code
+        self.gru = nn.GRU(input_size=128, hidden_size=128, num_layers=1, batch_first=True)
+        self.gru_dropout = nn.Dropout(0.5)
+        
+        # =========================
+        # CLASSIFIER
+        # =========================
+        self.classifier = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, num_classes)
+            # Note: CrossEntropyLoss applies Softmax internally in PyTorch
+        )
 
-    model = models.Sequential()
-
-    # =========================
-    # CNN FEATURE EXTRACTOR
-    # applied per frame
-    # =========================
-
-    model.add(layers.TimeDistributed(
-        layers.Conv2D(32, (3, 3), padding='same', activation='relu'),
-        input_shape=input_shape
-    ))
-    model.add(layers.TimeDistributed(layers.BatchNormalization()))
-    model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
-
-    model.add(layers.TimeDistributed(
-        layers.Conv2D(64, (3, 3), padding='same', activation='relu')
-    ))
-    model.add(layers.TimeDistributed(layers.BatchNormalization()))
-    model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
-
-    model.add(layers.TimeDistributed(
-        layers.Conv2D(128, (3, 3), padding='same', activation='relu')
-    ))
-    model.add(layers.TimeDistributed(layers.BatchNormalization()))
-    model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
-
-    # =========================
-    # KEY IMPROVEMENT:
-    # Replace Flatten() with GlobalAveragePooling2D
-    # =========================
-    model.add(layers.TimeDistributed(
-        layers.GlobalAveragePooling2D()
-    ))
-
-    # Dropout for regularization
-    model.add(layers.TimeDistributed(layers.Dropout(0.4)))
-
-    # =========================
-    # TEMPORAL MODELING (GRU)
-    # =========================
-
-    model.add(layers.GRU(128, return_sequences=False))
-    model.add(layers.Dropout(0.5))
-
-    # =========================
-    # CLASSIFIER
-    # =========================
-
-    model.add(layers.Dense(64, activation='relu'))
-    model.add(layers.Dropout(0.3))
-
-    model.add(layers.Dense(num_classes, activation='softmax'))
-
-    return model
-
-
-# =========================
-# PARAMETERS
-# =========================
-
-sequence_length = 20
-img_height, img_width = 48, 48
-channels = 1
-num_classes = 7   # or 4 depending on your setup
-
-model = build_improved_cnn_rnn(
-    (sequence_length, img_height, img_width, channels),
-    num_classes
-)
-
-# =========================
-# COMPILATION
-# =========================
-
-model.compile(
-    optimizer='adam',
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
-
-model.summary()
+    def forward(self, x):
+        # x is originally (Batch, Channels, Height, Width)
+        # Add a dummy sequence dimension: (Batch, Seq_Len=1, C, H, W)
+        if x.dim() == 4:
+            x = x.unsqueeze(1)
+            
+        batch_size, seq_len, C, H, W = x.size()
+        
+        # Reshape for CNN: (Batch * Seq_Len, C, H, W)
+        x = x.view(batch_size * seq_len, C, H, W)
+        
+        # Pass through CNN
+        x = self.cnn(x)
+        x = self.cnn_dropout(x)
+        
+        # Reshape for RNN: (Batch, Seq_Len, Features)
+        x = x.view(batch_size, seq_len, -1)
+        
+        # Pass through GRU
+        gru_out, _ = self.gru(x)
+        x = self.gru_dropout(gru_out)
+        
+        # Get the output from the last time step
+        last_out = x[:, -1, :]
+        
+        # Final classification
+        out = self.classifier(last_out)
+        
+        return out
