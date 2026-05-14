@@ -10,6 +10,7 @@ parser.add_argument('--trainsize', type=int, default=299, help='image size (224 
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
 parser.add_argument('--decay_epoch', type=int, default=50, help='every n epochs decay learning rate')
+parser.add_argument('--frozen', type=str, default='112', help='Tag for frozen layers to append to fine-tuning save files (e.g., 112, all, none)')
 
 # Architecture and Data
 parser.add_argument('--model', type=str, default='inception', choices=['inception', 'mobilenet', 'custom'], help='Choose the backbone model')

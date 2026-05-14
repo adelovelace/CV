@@ -140,14 +140,28 @@ def train_model(model, dataloaders, class_names, criterion, optimizer, num_epoch
                 log_file.write(f"Epoch {epoch+1}/{num_epochs} | " + log_msg)
 
             if phase == 'val':
+                
+                # --- Dynamic Filename Logic ---
+                if MODEL_CHOICE in ["custom", "scratch"]:
+                    best_filename = f"{DATASET_CHOICE}_best.pth"
+                    epoch_filename = f"{DATASET_CHOICE}_epoch{epoch+1}.pth"
+                else:
+                    best_filename = f"{DATASET_CHOICE}_frozen{opt.frozen}_best.pth"
+                    # For fine-tuning, overwriting the exact frozen filename every epoch as requested
+                    epoch_filename = f"{DATASET_CHOICE}_frozen{opt.frozen}.pth"
+                # -----------------------------------
+
+                # 1. Save Best Model (Based on Accuracy)
+                
                 if epoch_acc > best_acc:
                     best_acc = epoch_acc
                     best_model_wts = copy.deepcopy(model.state_dict())
                     
-                    best_path = os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth')
+                    best_path = os.path.join(ckpt_dir, best_filename)
                     torch.save(best_model_wts, best_path)
                     print(f"[*] New High Score! Best model saved to: {best_path}")
                 
+                # 2. Early Stopping Tracking (Based on Loss)
                 if epoch_loss < best_loss:
                     best_loss = epoch_loss
                     epochs_no_improve = 0  
@@ -156,7 +170,8 @@ def train_model(model, dataloaders, class_names, criterion, optimizer, num_epoch
                     
         wandb.log(wandb_metrics)
 
-        epoch_ckpt_path = os.path.join(ckpt_dir, f'epoch_{epoch+1}_{MODEL_CHOICE}.pth')
+        # Save the current epoch (or overwrite the frozen file)
+        epoch_ckpt_path = os.path.join(ckpt_dir, epoch_filename)
         torch.save(model.state_dict(), epoch_ckpt_path)
 
         if epochs_no_improve >= PATIENCE:
@@ -326,7 +341,7 @@ if __name__ == "__main__":
     
     base_save_dir = opt.save_path if '*' not in opt.save_path else './outputs'
     log_dir = os.path.join(base_save_dir, 'logs')
-    ckpt_dir = os.path.join(base_save_dir, 'checkpoints')
+    ckpt_dir = os.path.join(base_save_dir, 'checkpoints', MODEL_CHOICE)
     
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
