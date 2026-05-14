@@ -6,7 +6,7 @@ parser = argparse.ArgumentParser(description="Hybrid CNN-RNN for Emotion Detecti
 parser.add_argument('--epoch', type=int, default=150, help='epoch number')
 parser.add_argument('--lr', type=float, default=5e-5, help='learning rate')
 parser.add_argument('--batchsize', type=int, default=32, help='training batch size')
-parser.add_argument('--trainsize', type=int, default=299, help='image size (224 for mobilenet, 299 for inception)')
+parser.add_argument('--trainsize', type=int, default=299, help='image size (224 for mobilenet, 299 for inception, 44 for custom)')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
 parser.add_argument('--decay_epoch', type=int, default=50, help='every n epochs decay learning rate')

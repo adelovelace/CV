@@ -5,16 +5,23 @@ import torch.optim as optim
 import time
 import copy
 from datetime import datetime
+import numpy as np
 
-# Prevent matplotlib from trying to open a GUI window on headless servers (like Singularity)
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, classification_report, f1_score, recall_score
 
-# 1. Import the configuration arguments
+import wandb
+import cv2
+
+# --- NEW: Grad-CAM Imports ---
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+
 from config import opt
-
-# Import custom modules
 from utils.data_loader import get_data_loaders, download_kaggle_datasets
 from utils.training_utils import clip_gradient, adjust_lr
 from models.mobilenetv2_rnn import MobileNetV2_RNN
@@ -36,36 +43,28 @@ else:
 MODEL_CHOICE = opt.model
 DATASET_CHOICE = opt.dataset
 
-
-# Automatically fix image size if the user forgets to set it for MobileNet
 if MODEL_CHOICE == "mobilenet" and opt.trainsize != 224:
-    print("[!] MobileNetV2 selected: Automatically setting image size to 224x224")
     opt.trainsize = 224
 elif MODEL_CHOICE == "inception" and opt.trainsize != 299:
-    print("[!] InceptionV3 selected: Automatically setting image size to 299x299")
     opt.trainsize = 299
 elif MODEL_CHOICE == "custom" and opt.trainsize != 48:
-    print("[!] Custom selected: Automatically setting image size to 48x48")
     opt.trainsize = 48
 
-# Allow patience to be set from config, or default to 15 epochs
 PATIENCE = getattr(opt, 'patience', 15)
 
 # ==========================================
 # Training and Evaluation Functions
 # ==========================================
-def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, log_dir, ckpt_dir):
+def train_model(model, dataloaders, class_names, criterion, optimizer, num_epochs, init_lr, log_dir, ckpt_dir):
     since = time.time()
     
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
     best_loss = float('inf')
     epochs_no_improve = 0
-
-    # Dictionaries to track history for plotting
+    
     history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
     
-    # Initialize the log file
     log_file_path = os.path.join(log_dir, f'training_{MODEL_CHOICE}_{DATASET_CHOICE}.log')
     with open(log_file_path, "a") as log_file:
         log_file.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Training for {num_epochs} Epochs...\n")
@@ -77,6 +76,8 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
         print(f'\nEpoch {epoch+1}/{num_epochs} [LR: {current_lr:.6f}]')
         print('-' * 15)
 
+        wandb_metrics = {"epoch": epoch + 1, "learning_rate": current_lr}
+
         for phase in ['train', 'val']:
             if phase == 'train':
                 model.train()  
@@ -86,6 +87,9 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
             running_loss = 0.0
             running_corrects = 0
             total_samples = 0
+            
+            epoch_preds = []
+            epoch_labels = []
 
             for inputs, labels in dataloaders[phase]:
                 inputs = inputs.to(DEVICE)
@@ -106,46 +110,55 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
                 total_samples += inputs.size(0)
+                
+                epoch_preds.extend(preds.cpu().numpy())
+                epoch_labels.extend(labels.cpu().numpy())
 
             epoch_loss = running_loss / total_samples
-            epoch_acc = running_corrects.double() / total_samples
+            epoch_acc = (running_corrects.double() / total_samples).item() 
+            
+            epoch_f1 = f1_score(epoch_labels, epoch_preds, average='macro', zero_division=0)
+            epoch_recall = recall_score(epoch_labels, epoch_preds, average='macro', zero_division=0)
 
-            # Record metrics for plotting
             if phase == 'train':
                 history['train_loss'].append(epoch_loss)
-                history['train_acc'].append(epoch_acc.item())
+                history['train_acc'].append(epoch_acc)
+                wandb_metrics["Train Loss"] = epoch_loss
+                wandb_metrics["Train Accuracy"] = epoch_acc
+                wandb_metrics["Train F1"] = epoch_f1
             else:
                 history['val_loss'].append(epoch_loss)
-                history['val_acc'].append(epoch_acc.item())
+                history['val_acc'].append(epoch_acc)
+                wandb_metrics["Val Loss"] = epoch_loss
+                wandb_metrics["Val Accuracy"] = epoch_acc
+                wandb_metrics["Val F1"] = epoch_f1
+                wandb_metrics["Val Recall"] = epoch_recall
 
-            # Print to console and write to log file
-            log_msg = f"Epoch {epoch+1}/{num_epochs} | Phase: {phase.capitalize()} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}\n"
+            log_msg = f"Phase: {phase.capitalize()} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f} | F1: {epoch_f1:.4f} | Recall: {epoch_recall:.4f}\n"
             print(log_msg.strip())
             with open(log_file_path, "a") as log_file:
-                log_file.write(log_msg)
+                log_file.write(f"Epoch {epoch+1}/{num_epochs} | " + log_msg)
 
-            # Deep copy the model if it's the best validation accuracy so far
-            # Evaluate Validation phase for Checkpointing and Early Stopping
             if phase == 'val':
-                # 1. Save Best Model (Based on Accuracy)
                 if epoch_acc > best_acc:
                     best_acc = epoch_acc
                     best_model_wts = copy.deepcopy(model.state_dict())
+                    
                     best_path = os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth')
                     torch.save(best_model_wts, best_path)
+                    print(f"[*] New High Score! Best model saved to: {best_path}")
                 
-                # 2. Early Stopping Tracking (Based on Loss)
                 if epoch_loss < best_loss:
                     best_loss = epoch_loss
-                    epochs_no_improve = 0  # Reset counter if loss improves
+                    epochs_no_improve = 0  
                 else:
                     epochs_no_improve += 1
+                    
+        wandb.log(wandb_metrics)
 
-        # Save an explicit checkpoint at the end of every epoch
         epoch_ckpt_path = os.path.join(ckpt_dir, f'epoch_{epoch+1}_{MODEL_CHOICE}.pth')
         torch.save(model.state_dict(), epoch_ckpt_path)
 
-        # Trigger Early Stopping
         if epochs_no_improve >= PATIENCE:
             stop_msg = f"\n[!] EARLY STOPPING TRIGGERED: Validation loss has not improved for {PATIENCE} epochs.\n"
             print(stop_msg)
@@ -159,10 +172,39 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
     with open(log_file_path, "a") as log_file:
         log_file.write(summary_msg + "-" * 50 + "\n")
 
-    # Generate and save Train vs Val Plot
-    plt.figure(figsize=(14, 5))
+    model.load_state_dict(best_model_wts)
+    model.eval()
     
-    # Plot Loss
+    print("[!] Generating Final Confusion Matrix and Evaluation Metrics...")
+    final_preds = []
+    final_labels = []
+    
+    with torch.no_grad():
+        for inputs, labels in dataloaders['val']:
+            inputs = inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            final_preds.extend(preds.cpu().numpy())
+            final_labels.extend(labels.cpu().numpy())
+
+    report = classification_report(final_labels, final_preds, target_names=class_names, zero_division=0)
+    print("\nClassification Report:\n", report)
+    with open(log_file_path, "a") as log_file:
+        log_file.write("\nFinal Classification Report:\n" + report + "\n")
+
+    cm = confusion_matrix(final_labels, final_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+    plt.title(f'Confusion Matrix ({MODEL_CHOICE.upper()})')
+    plt.ylabel('Actual Emotion')
+    plt.xlabel('Predicted Emotion')
+    cm_path = os.path.join(log_dir, f'confusion_matrix_{MODEL_CHOICE}_{DATASET_CHOICE}.png')
+    plt.savefig(cm_path, bbox_inches='tight')
+    plt.close()
+    print(f"[!] Confusion Matrix saved to: {cm_path}")
+
+    plt.figure(figsize=(14, 5))
     plt.subplot(1, 2, 1)
     plt.plot(history['train_loss'], label='Train Loss', color='blue', linewidth=2)
     plt.plot(history['val_loss'], label='Val Loss', color='red', linewidth=2, linestyle='dashed')
@@ -172,7 +214,6 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # Plot Accuracy
     plt.subplot(1, 2, 2)
     plt.plot(history['train_acc'], label='Train Accuracy', color='blue', linewidth=2)
     plt.plot(history['val_acc'], label='Val Accuracy', color='red', linewidth=2, linestyle='dashed')
@@ -185,18 +226,104 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs, init_lr, l
     plot_path = os.path.join(log_dir, f'learning_curves_{MODEL_CHOICE}_{DATASET_CHOICE}.png')
     plt.savefig(plot_path, bbox_inches='tight')
     plt.close()
-    print(f"[!] Learning curves plotted and saved to: {plot_path}")
+    
+    wandb.log({
+        "Learning Curves (Plot)": wandb.Image(plot_path),
+        "Confusion Matrix": wandb.Image(cm_path)
+    })
+    wandb.save(os.path.join(ckpt_dir, f'best_{MODEL_CHOICE}_{DATASET_CHOICE}.pth'))
 
-    # Load best weights to return
-    model.load_state_dict(best_model_wts)
     return model
+
+# --- NEW: Grad-CAM Generation Function ---
+def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, model_choice):
+    print("\n[!] Generating Grad-CAM Heatmaps...")
+    model.eval()
+    
+    # Identify the correct target layer based on the architecture
+    target_layers = []
+    if model_choice == "custom" or model_choice == "scratch":
+        # The last Conv2d layer in your CustomCNN_RNN Sequential block is at index 17
+        target_layers = [model.cnn[17]] 
+    elif model_choice == "mobilenet":
+        target_layers = [model.features[-1]]
+    elif model_choice == "inception":
+        target_layers = [model.features.Mixed_7c]
+    else:
+        print("[-] Grad-CAM not configured for this architecture yet.")
+        return
+
+    try:
+        cam = GradCAM(model=model, target_layers=target_layers)
+    except Exception as e:
+        print(f"[-] Could not initialize Grad-CAM: {e}")
+        return
+    
+    # Grab a single batch of validation images
+    inputs, labels = next(iter(val_loader))
+    
+    # Take the first 8 images from the batch to visualize
+    inputs = inputs[:8].to(device)
+    labels = labels[:8].to(device)
+    
+    wandb_images = []
+    
+    for i in range(inputs.size(0)):
+        input_tensor = inputs[i].unsqueeze(0) # Shape: (1, C, H, W)
+        true_label = labels[i].item()
+        target = [ClassifierOutputTarget(true_label)]
+        
+        # Generate the grayscale Grad-CAM mask
+        grayscale_cam = cam(input_tensor=input_tensor, targets=target)[0, :]
+        
+        # Un-normalize the image for display purposes
+        img = input_tensor.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+        
+        # Overlay the heatmap on the original image
+        visualization = show_cam_on_image(img, grayscale_cam, use_rgb=True)
+        
+        # Get the model's prediction for the caption
+        with torch.no_grad():
+            output = model(input_tensor)
+            pred_label = output.argmax(dim=1).item()
+            
+        caption = f"True: {class_names[true_label]} | Pred: {class_names[pred_label]}"
+        
+        # Save locally
+        save_path = os.path.join(log_dir, f'gradcam_{model_choice}_{i}.png')
+        cv2.imwrite(save_path, cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR))
+        
+        # Append to W&B list
+        wandb_images.append(wandb.Image(visualization, caption=caption))
+        
+    if wandb_images:
+        wandb.log({"Grad-CAM Heatmaps": wandb_images})
+        print(f"[!] Saved 8 Grad-CAM visualizations to {log_dir} and W&B.")
 
 # ==========================================
 # Main Execution
 # ==========================================
 if __name__ == "__main__":
     
-    # 1. Setup Directories for outputs, logs, and checkpoints
+    wandb.init(
+        entity="usi-cv",
+        project="sentiment-project",
+        name=f"Run_{MODEL_CHOICE}_{DATASET_CHOICE}",
+        config={
+            "architecture": MODEL_CHOICE,
+            "dataset": DATASET_CHOICE,
+            "epochs": opt.epoch,
+            "learning_rate": opt.lr,
+            "batch_size": opt.batchsize,
+            "image_size": opt.trainsize,
+            "grad_clip": opt.clip,
+            "decay_rate": opt.decay_rate,
+            "decay_interval": opt.decay_epoch,
+            "early_stopping_patience": PATIENCE,
+        }
+    )
+    
     base_save_dir = opt.save_path if '*' not in opt.save_path else './outputs'
     log_dir = os.path.join(base_save_dir, 'logs')
     ckpt_dir = os.path.join(base_save_dir, 'checkpoints')
@@ -205,10 +332,7 @@ if __name__ == "__main__":
     os.makedirs(ckpt_dir, exist_ok=True)
     
     print(f"[!] Using device: {DEVICE} (GPU ID: {opt.gpu_id})")
-    print(f"[!] Logs saving to: {log_dir}")
-    print(f"[!] Checkpoints saving to: {ckpt_dir}")
     
-    # Download/Verify Kaggle Data
     fer_path, ck_path = download_kaggle_datasets('./data')
     dataset_path = fer_path if DATASET_CHOICE == "fer2013" else ck_path
     
@@ -218,9 +342,7 @@ if __name__ == "__main__":
     train_loader, val_loader, class_names = get_data_loaders(dataset_path, img_size, batch_size)
     dataloaders = {'train': train_loader, 'val': val_loader}
     NUM_CLASSES = len(class_names)
-    print(f"[!] Detected {NUM_CLASSES} classes. Image Size: {img_size}x{img_size}")
 
-    # Initialize Model
     if MODEL_CHOICE == "inception":
         model = InceptionV3_RNN(num_classes=NUM_CLASSES)
     elif MODEL_CHOICE == "mobilenet":
@@ -230,27 +352,35 @@ if __name__ == "__main__":
         
     model = model.to(DEVICE)
 
-    # Load model from checkpoint if provided in config
     if opt.load and os.path.exists(opt.load):
-        print(f"[!] Loading checkpoint weights from: {opt.load}")
         model.load_state_dict(torch.load(opt.load, map_location=DEVICE))
 
-    # Setup Optimizer
     params_to_update = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(params_to_update, lr=opt.lr)
     criterion = nn.CrossEntropyLoss()
 
-    # Train Model
-    print(f"\n[!] Starting training for {opt.epoch} epochs...")
+    print(f"\n[!] Starting training for {opt.epoch} epochs (Early Stopping Patience: {PATIENCE})...")
     best_model = train_model(
         model=model, 
         dataloaders=dataloaders, 
+        class_names=class_names,  
         criterion=criterion, 
         optimizer=optimizer, 
         num_epochs=opt.epoch, 
         init_lr=opt.lr,
-        log_dir=log_dir,          # Passed dynamically
-        ckpt_dir=ckpt_dir         # Passed dynamically
+        log_dir=log_dir,
+        ckpt_dir=ckpt_dir
     )
     
-    print("[!] Training loop finished. The best weights are saved in the checkpoints directory.")
+    # --- NEW: Generate Grad-CAM before finishing ---
+    generate_and_log_gradcam(
+        model=best_model, 
+        val_loader=dataloaders['val'], 
+        class_names=class_names, 
+        device=DEVICE, 
+        log_dir=log_dir, 
+        model_choice=MODEL_CHOICE
+    )
+    
+    print("[!] Training loop finished. Closing W&B run.")
+    wandb.finish()

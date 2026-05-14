@@ -138,11 +138,13 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.cv_env
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+cv_env/
 
 # Spyder project settings
 .spyderproject
@@ -211,10 +213,10 @@ __marimo__/
 *.zip
 
 # Checkpoints and Logs
-# /outputs/
-# /weights/
-# *.pth
-# *.log
+/outputs/
+/weights/
+*.pth
+*.log
 
 # Python cache
 __pycache__/
