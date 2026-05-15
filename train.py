@@ -250,14 +250,17 @@ def train_model(model, dataloaders, class_names, criterion, optimizer, num_epoch
 
     return model
 
-# --- NEW: Grad-CAM Generation Function ---
+# --- Grad-CAM Generation Function ---
 def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, model_choice):
     print("\n[!] Generating Grad-CAM Heatmaps...")
     model.eval()
     
+    # --- Temporarily disable cuDNN to allow RNN backward passes in eval mode ---
+    torch.backends.cudnn.enabled = False
+    
     # Identify the correct target layer based on the architecture
     target_layers = []
-    if model_choice == "custom" or model_choice == "scratch":
+    if model_choice == "custom":
         # The last Conv2d layer in your CustomCNN_RNN Sequential block is at index 17
         target_layers = [model.cnn[17]] 
     elif model_choice == "mobilenet":
@@ -266,12 +269,14 @@ def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, mo
         target_layers = [model.features.Mixed_7c]
     else:
         print("[-] Grad-CAM not configured for this architecture yet.")
+        torch.backends.cudnn.enabled = True # Safely re-enable before returning
         return
 
     try:
         cam = GradCAM(model=model, target_layers=target_layers)
     except Exception as e:
         print(f"[-] Could not initialize Grad-CAM: {e}")
+        torch.backends.cudnn.enabled = True # Safely re-enable before returning
         return
     
     # Grab a single batch of validation images
@@ -315,6 +320,9 @@ def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, mo
     if wandb_images:
         wandb.log({"Grad-CAM Heatmaps": wandb_images})
         print(f"[!] Saved 8 Grad-CAM visualizations to {log_dir} and W&B.")
+
+    # --- FIX: Re-enable cuDNN for future executions ---
+    torch.backends.cudnn.enabled = True
 
 # ==========================================
 # Main Execution
@@ -387,14 +395,14 @@ if __name__ == "__main__":
         ckpt_dir=ckpt_dir
     )
     
-    # --- NEW: Generate Grad-CAM before finishing ---
+    # --- Generate Grad-CAM before finishing ---
     generate_and_log_gradcam(
         model=best_model, 
         val_loader=dataloaders['val'], 
         class_names=class_names, 
         device=DEVICE, 
         log_dir=log_dir, 
-        model_choice=MODEL_CHOICE
+        model_choice=MODEL_CHOICExs
     )
     
     print("[!] Training loop finished. Closing W&B run.")
