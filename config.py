@@ -20,5 +20,6 @@ parser.add_argument('--dataset', type=str, default='fer2013', choices=['fer2013'
 parser.add_argument('--load', type=str, default='', help='path to load pre-trained checkpoints')
 parser.add_argument('--gpu_id', type=str, default='0', help='train use gpu ID')
 parser.add_argument('--save_path', type=str, default='./outputs', help='the path to save models and logs')
+parser.add_argument('--seed', type=int, default=42, help='Random seed for strict reproducibility')
 
 opt = parser.parse_args()

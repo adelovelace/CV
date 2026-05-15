@@ -34,7 +34,7 @@ def get_transforms(img_size, train=True):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-def get_data_loaders(dataset_path, img_size, batch_size):
+def get_data_loaders(dataset_path, img_size, batch_size, seed=42):
     train_path = os.path.join(dataset_path, 'train')
     val_path = os.path.join(dataset_path, 'test')
 
@@ -61,7 +61,8 @@ def get_data_loaders(dataset_path, img_size, batch_size):
         train_subset, val_subset = random_split(
             full_dataset, 
             [train_size, val_size],
-            generator=torch.Generator().manual_seed(42) # Fixed seed for reproducibility
+            # Pass the dynamic seed into the generator 
+            generator=torch.Generator().manual_seed(seed) 
         )
         
         # Apply the respective transformations to the subsets

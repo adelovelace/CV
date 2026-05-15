@@ -1,4 +1,5 @@
 import os
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -51,6 +52,25 @@ elif MODEL_CHOICE == "custom" and opt.trainsize != 48:
     opt.trainsize = 48
 
 PATIENCE = getattr(opt, 'patience', 15)
+
+# ==========================================
+# Reproducibility Setup
+# ==========================================
+def set_seed(seed):
+    """Locks all random number generators to ensure reproducible experiments."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed) # For multi-GPU
+        
+    # Force cuDNN to be deterministic (Note: may slightly impact performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    print(f"[!] Global Seed set to: {seed}")
 
 # ==========================================
 # Training and Evaluation Functions
@@ -368,6 +388,8 @@ if __name__ == "__main__":
     os.makedirs(ckpt_dir, exist_ok=True)
     
     print(f"[!] Using device: {DEVICE} (GPU ID: {opt.gpu_id})")
+
+    set_seed(opt.seed)
     
     fer_path, ck_path = download_kaggle_datasets('./data')
     dataset_path = fer_path if DATASET_CHOICE == "fer2013" else ck_path
@@ -375,7 +397,7 @@ if __name__ == "__main__":
     img_size = opt.trainsize 
     batch_size = opt.batchsize
     
-    train_loader, val_loader, class_names = get_data_loaders(dataset_path, img_size, batch_size)
+    train_loader, val_loader, class_names = get_data_loaders(dataset_path, img_size, batch_size, seed=opt.seed)
     dataloaders = {'train': train_loader, 'val': val_loader}
     NUM_CLASSES = len(class_names)
 
