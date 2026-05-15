@@ -208,13 +208,20 @@ def train_model(model, dataloaders, class_names, criterion, optimizer, num_epoch
     with open(log_file_path, "a") as log_file:
         log_file.write("\nFinal Classification Report:\n" + report + "\n")
 
+    
+    if MODEL_CHOICE in ["custom", "scratch"]:
+        plot_suffix = f"{MODEL_CHOICE}_{DATASET_CHOICE}"
+    else:
+        plot_suffix = f"{MODEL_CHOICE}_{DATASET_CHOICE}_frozen{opt.frozen}"
+
     cm = confusion_matrix(final_labels, final_preds)
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
     plt.title(f'Confusion Matrix ({MODEL_CHOICE.upper()})')
     plt.ylabel('Actual Emotion')
     plt.xlabel('Predicted Emotion')
-    cm_path = os.path.join(log_dir, f'confusion_matrix_{MODEL_CHOICE}_{DATASET_CHOICE}.png')
+    
+    cm_path = os.path.join(log_dir, f'confusion_matrix_{plot_suffix}.png')
     plt.savefig(cm_path, bbox_inches='tight')
     plt.close()
     print(f"[!] Confusion Matrix saved to: {cm_path}")
@@ -238,7 +245,7 @@ def train_model(model, dataloaders, class_names, criterion, optimizer, num_epoch
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    plot_path = os.path.join(log_dir, f'learning_curves_{MODEL_CHOICE}_{DATASET_CHOICE}.png')
+    plot_path = os.path.join(log_dir, f'learning_curves_{plot_suffix}.png')
     plt.savefig(plot_path, bbox_inches='tight')
     plt.close()
     
@@ -309,9 +316,15 @@ def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, mo
             pred_label = output.argmax(dim=1).item()
             
         caption = f"True: {class_names[true_label]} | Pred: {class_names[pred_label]}"
+
+        # Update the suffix logic here too
+        if model_choice in ["custom"]:
+            cam_suffix = f"{model_choice}_{i}"
+        else:
+            cam_suffix = f"{model_choice}_frozen{opt.frozen}_{i}"
         
         # Save locally
-        save_path = os.path.join(log_dir, f'gradcam_{model_choice}_{i}.png')
+        save_path = os.path.join(log_dir, f'gradcam_{cam_suffix}.png')
         cv2.imwrite(save_path, cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR))
         
         # Append to W&B list
@@ -321,7 +334,7 @@ def generate_and_log_gradcam(model, val_loader, class_names, device, log_dir, mo
         wandb.log({"Grad-CAM Heatmaps": wandb_images})
         print(f"[!] Saved 8 Grad-CAM visualizations to {log_dir} and W&B.")
 
-    # --- FIX: Re-enable cuDNN for future executions ---
+    # --- Re-enable cuDNN for future executions ---
     torch.backends.cudnn.enabled = True
 
 # ==========================================
