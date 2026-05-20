@@ -437,7 +437,7 @@ if __name__ == "__main__":
         class_names=class_names, 
         device=DEVICE, 
         log_dir=log_dir, 
-        model_choice=MODEL_CHOICExs
+        model_choice=MODEL_CHOICE
     )
     
     print("[!] Training loop finished. Closing W&B run.")
